@@ -5,8 +5,24 @@ import VisionPanel from './vision-panel'
 import PaperSearchPanel from './paper-search-panel'
 import PlotPanel from './plot-panel'
 import ReviewPanel from './review-panel'
+import SkillsPanel from './skills-panel'
+import WebSearchPanel from './websearch-panel'
+import GitPanel from './git-panel'
+import ResearchPanel from './research-panel'
+import TerminalPanel from './terminal-panel'
 
-type Tab = 'mentor' | 'chat' | 'vision' | 'search' | 'plot' | 'review'
+type Tab =
+  | 'mentor'
+  | 'chat'
+  | 'vision'
+  | 'search'
+  | 'plot'
+  | 'review'
+  | 'skills'
+  | 'websearch'
+  | 'git'
+  | 'research'
+  | 'terminal'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'mentor', label: 'Paper Mentor' },
@@ -15,6 +31,11 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'search', label: 'Search' },
   { id: 'plot', label: 'Plot' },
   { id: 'review', label: 'Review' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'websearch', label: 'Web' },
+  { id: 'git', label: 'Git' },
+  { id: 'research', label: 'Research' },
+  { id: 'terminal', label: 'Terminal' },
 ]
 
 export default function AiTutorRoot() {
@@ -30,7 +51,7 @@ export default function AiTutorRoot() {
             style={{
               background: 'none', border: 'none',
               borderBottom: tab === t.id ? '2px solid var(--blue-50)' : '2px solid transparent',
-              padding: '8px 10px', cursor: 'pointer',
+              padding: '8px 9px', cursor: 'pointer',
               fontWeight: tab === t.id ? 600 : 400,
               color: 'var(--content-primary-themed)', fontSize: '13px',
             }}
@@ -46,6 +67,11 @@ export default function AiTutorRoot() {
         {tab === 'search' && <PaperSearchPanel />}
         {tab === 'plot' && <PlotPanel />}
         {tab === 'review' && <ReviewPanel />}
+        {tab === 'skills' && <SkillsPanel />}
+        {tab === 'websearch' && <WebSearchPanel />}
+        {tab === 'git' && <GitPanel />}
+        {tab === 'research' && <ResearchPanel />}
+        {tab === 'terminal' && <TerminalPanel />}
       </div>
     </div>
   )
