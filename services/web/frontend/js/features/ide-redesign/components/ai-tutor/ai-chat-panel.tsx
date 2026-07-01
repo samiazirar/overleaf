@@ -6,6 +6,36 @@ import ProviderModelSelector from './provider-model-selector'
 import StreamEventList from './stream-event-list'
 import { useAgentStream } from './use-agent-stream'
 import { extractDocContext } from './doc-context-extraction'
+import { useApplyEdit, EditRange } from './apply-edit'
+
+// Parse a @@edit JSON block from a message text if present.
+// The sidecar agent can emit a message containing a block like:
+//   @@edit {"from":10,"to":20,"insert":"replacement text"}
+// This is purely optional: if absent the panel renders normally.
+function parseEditBlock(text: string): EditRange | null {
+  const match = text.match(/@@edit\s+(\{[^}]+\})/)
+  if (!match) return null
+  try {
+    const parsed = JSON.parse(match[1]) as unknown
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as Record<string, unknown>).from === 'number' &&
+      typeof (parsed as Record<string, unknown>).to === 'number' &&
+      typeof (parsed as Record<string, unknown>).insert === 'string'
+    ) {
+      const p = parsed as Record<string, unknown>
+      return {
+        from: p.from as number,
+        to: p.to as number,
+        insert: p.insert as string,
+      }
+    }
+  } catch {
+    // malformed JSON: ignore
+  }
+  return null
+}
 
 export default function AiChatPanel() {
   const projectId = getMeta('ol-project_id') ?? 'unknown'
@@ -14,6 +44,14 @@ export default function AiChatPanel() {
   const [prompt, setPrompt] = useState('')
   const [providerId, setProviderId] = useState('')
   const [modelId, setModelId] = useState('')
+  // appliedEdits tracks which stream event indices have already been applied
+  // so the Apply button becomes disabled after first use.
+  const [appliedEdits, setAppliedEdits] = useState<Set<number>>(new Set())
+
+  // useApplyEdit reads EditorViewContext (the cross-tree bridge available
+  // anywhere inside EditorViewProvider). It returns null when the editor
+  // is not yet mounted, in which case the Apply button is hidden.
+  const applyHook = useApplyEdit()
 
   // Read editor context via useContext so they return undefined outside a
   // provider rather than throwing. This makes the panel safe to render in
@@ -99,6 +137,41 @@ export default function AiChatPanel() {
         }}
       >
         <StreamEventList events={stream.events} running={stream.running} />
+        {/* Apply buttons: rendered for each message event that carries an @@edit block */}
+        {stream.events.map((event, idx) => {
+          if (event.kind !== 'message' || !event.text) return null
+          const editRange = parseEditBlock(event.text)
+          if (!editRange || !applyHook) return null
+          const alreadyApplied = appliedEdits.has(idx)
+          return (
+            <div key={`apply-${idx}`} style={{ margin: '4px 0' }}>
+              <button
+                type="button"
+                disabled={alreadyApplied}
+                onClick={() => {
+                  applyHook.applyEdit(editRange)
+                  setAppliedEdits(prev => new Set([...prev, idx]))
+                }}
+                style={{
+                  padding: '5px 10px',
+                  fontSize: '12px',
+                  cursor: alreadyApplied ? 'not-allowed' : 'pointer',
+                  backgroundColor: alreadyApplied
+                    ? 'var(--bg-secondary-themed)'
+                    : 'var(--green-50)',
+                  color: alreadyApplied
+                    ? 'var(--content-secondary-themed)'
+                    : '#fff',
+                  border: 'none',
+                  borderRadius: '4px',
+                  opacity: alreadyApplied ? 0.6 : 1,
+                }}
+              >
+                {alreadyApplied ? 'Applied' : 'Apply edit'}
+              </button>
+            </div>
+          )
+        })}
       </div>
 
       {/* Prompt input area */}
