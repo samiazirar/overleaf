@@ -54,6 +54,19 @@ export function applyFullReplace(view: EditorView, newText: string): void {
 }
 
 /**
+ * Inserts text at the current cursor, replacing any active selection, and moves
+ * the cursor to the end of the inserted text. Used by the Vision / Plot / Search
+ * tabs to drop generated LaTeX into the document.
+ */
+export function insertAtCursor(view: EditorView, text: string): void {
+  const sel = view.state.selection.main
+  view.dispatch({
+    changes: { from: sel.from, to: sel.to, insert: text },
+    selection: { anchor: sel.from + text.length },
+  })
+}
+
+/**
  * React hook that returns apply callbacks bound to the live EditorView,
  * or null when the editor has not yet mounted.
  *
@@ -67,6 +80,7 @@ export function applyFullReplace(view: EditorView, newText: string): void {
 export interface ApplyEditHookResult {
   applyEdit: (edit: EditRange) => void
   applyFullReplace: (newText: string) => void
+  insertAtCursor: (text: string) => void
 }
 
 export function useApplyEdit(): ApplyEditHookResult | null {
@@ -88,6 +102,18 @@ export function useApplyEdit(): ApplyEditHookResult | null {
     [view]
   )
 
+  const boundInsertAtCursor = useCallback(
+    (text: string) => {
+      if (!view) return
+      insertAtCursor(view, text)
+    },
+    [view]
+  )
+
   if (!view) return null
-  return { applyEdit: boundApplyEdit, applyFullReplace: boundApplyFullReplace }
+  return {
+    applyEdit: boundApplyEdit,
+    applyFullReplace: boundApplyFullReplace,
+    insertAtCursor: boundInsertAtCursor,
+  }
 }
