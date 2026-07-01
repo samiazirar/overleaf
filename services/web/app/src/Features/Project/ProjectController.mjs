@@ -976,6 +976,7 @@ const _ProjectController = {
         },
         standardPlanPricing,
         recommendedCurrency,
+        sidecarUrl: process.env.OPENPRISM_SIDECAR_URL ?? '',
       })
       timer.done()
     } catch (err) {
