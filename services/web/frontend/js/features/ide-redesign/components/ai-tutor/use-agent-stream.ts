@@ -40,7 +40,10 @@ export interface UseAgentStreamResult {
   clearStream: () => void
 }
 
-export function useAgentStream(workdir: string): UseAgentStreamResult {
+export function useAgentStream(
+  workdir: string,
+  backend: string = 'opencode'
+): UseAgentStreamResult {
   const [events, setEvents] = useState<Agent2Event[]>([])
   const [running, setRunning] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -57,13 +60,23 @@ export function useAgentStream(workdir: string): UseAgentStreamResult {
     }
   }, [])
 
+  // Sessions belong to a specific backend (opencode/codex/claude). When the user
+  // switches agent, drop the cached session so the next send starts a fresh one
+  // on the chosen backend rather than reusing an id the new backend never made.
+  useEffect(() => {
+    closeEventSource()
+    sessionIdRef.current = null
+    setSessionId(null)
+    setRunning(false)
+  }, [backend, closeEventSource])
+
   const ensureSession = useCallback(async (): Promise<string> => {
     if (sessionIdRef.current) return sessionIdRef.current
 
     const resp = await fetch(`${base}/api/agent2/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workdir }),
+      body: JSON.stringify({ workdir, backend }),
     })
     if (!resp.ok) {
       throw new Error(`Session creation failed: HTTP ${resp.status}`)
@@ -72,13 +85,13 @@ export function useAgentStream(workdir: string): UseAgentStreamResult {
     sessionIdRef.current = data.sessionId
     setSessionId(data.sessionId)
     return data.sessionId
-  }, [base, workdir])
+  }, [base, workdir, backend])
 
   const openEventSource = useCallback(
     (sid: string) => {
       closeEventSource()
       const enc = encodeURIComponent
-      const url = `${base}/api/agent2/events?workdir=${enc(workdir)}&sessionId=${enc(sid)}`
+      const url = `${base}/api/agent2/events?workdir=${enc(workdir)}&sessionId=${enc(sid)}&backend=${enc(backend)}`
       const es = new EventSource(url)
 
       es.addEventListener('message', (ev: MessageEvent) => {
@@ -113,6 +126,7 @@ export function useAgentStream(workdir: string): UseAgentStreamResult {
         workdir,
         sessionId: sid,
         text: payload.text,
+        backend,
       }
       if (payload.selection) body.selection = payload.selection
       if (payload.model) body.model = payload.model
@@ -127,7 +141,7 @@ export function useAgentStream(workdir: string): UseAgentStreamResult {
         throw new Error(`Message failed: HTTP ${resp.status}`)
       }
     },
-    [base, workdir, ensureSession, openEventSource]
+    [base, workdir, backend, ensureSession, openEventSource]
   )
 
   const abort = useCallback(() => {
@@ -140,12 +154,13 @@ export function useAgentStream(workdir: string): UseAgentStreamResult {
         body: JSON.stringify({
           workdir,
           sessionId: sessionIdRef.current,
+          backend,
         }),
       }).catch(() => {
         // best-effort; ignore errors
       })
     }
-  }, [base, workdir, closeEventSource])
+  }, [base, workdir, backend, closeEventSource])
 
   const clearStream = useCallback(() => {
     setEvents([])

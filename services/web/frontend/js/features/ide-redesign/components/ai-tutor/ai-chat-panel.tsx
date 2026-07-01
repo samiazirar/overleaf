@@ -3,6 +3,7 @@ import getMeta from '@/utils/meta'
 import { EditorOpenDocContext } from '@/features/ide-react/context/editor-open-doc-context'
 import { EditorSelectionContext } from '@/shared/context/editor-selection-context'
 import ProviderModelSelector from './provider-model-selector'
+import BackendSelect from './backend-select'
 import StreamEventList from './stream-event-list'
 import { useAgentStream } from './use-agent-stream'
 import { extractDocContext } from './doc-context-extraction'
@@ -39,7 +40,8 @@ function parseEditBlock(text: string): EditRange | null {
 
 export default function AiChatPanel() {
   const projectId = getMeta('ol-project_id') ?? 'unknown'
-  const stream = useAgentStream(projectId)
+  const [backend, setBackend] = useState('opencode')
+  const stream = useAgentStream(projectId, backend)
 
   const [prompt, setPrompt] = useState('')
   const [providerId, setProviderId] = useState('')
@@ -117,6 +119,13 @@ export default function AiChatPanel() {
         boxSizing: 'border-box',
       }}
     >
+      {/* Coding-agent backend selector (opencode / codex / claude) */}
+      <BackendSelect
+        value={backend}
+        onChange={setBackend}
+        disabled={stream.running}
+      />
+
       {/* Provider + model selector */}
       <ProviderModelSelector
         providerId={providerId}
