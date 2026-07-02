@@ -72,6 +72,7 @@
     "safari > 14"
   ],
   "dependencies": {
+    "@ai-sdk/google-vertex": "^3.0.0",
     "@ai-sdk/mcp": "^1.0.0",
     "@ai-sdk/openai": "^3.0.0",
     "@aws-sdk/client-ses": "^3.864.0",

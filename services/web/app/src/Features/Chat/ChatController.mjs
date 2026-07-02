@@ -537,7 +537,7 @@ async function analyzeWholeProject(req, res) {
 async function reviewWholeProject(req, res) {
   try {
   const { project_id: projectId } = req.params
-  const { model = 'gpt-5.2-chat-latest', venue = 'arxiv', roleModelTexts: rawRoleModelTexts = [] } = req.body
+  const { model = 'gemini-3.1-pro-preview', venue = 'arxiv', roleModelTexts: rawRoleModelTexts = [] } = req.body
   const userId = SessionManager.getLoggedInUserId(req.session)
 
   // Validate roleModelTexts if provided

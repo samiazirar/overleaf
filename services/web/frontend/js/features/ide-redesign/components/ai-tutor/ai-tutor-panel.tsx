@@ -26,12 +26,9 @@ import {
 } from './extract-pdf-text'
 
 const MODEL_OPTIONS = [
-  { value: 'gpt-4o', label: 'GPT-4o' },
-  { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-  { value: 'gpt-4.1', label: 'GPT-4.1' },
-  { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
-  { value: 'gpt-5.2', label: 'GPT-5.2' },
-  { value: 'gpt-5.2-chat-latest', label: 'GPT-5.2 Chat' },
+  { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
+  { value: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+  { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
 ]
 
 const VENUE_OPTIONS = [
@@ -57,7 +54,7 @@ export default function AiTutorPanel() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
   // Model selection
-  const [selectedModel, setSelectedModel] = useState('gpt-5.2-chat-latest')
+  const [selectedModel, setSelectedModel] = useState('gemini-3.1-pro-preview')
 
   // Venue selection
   const [selectedVenue, setSelectedVenue] = useState('arxiv')

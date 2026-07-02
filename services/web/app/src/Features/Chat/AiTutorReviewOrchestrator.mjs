@@ -11,8 +11,50 @@
  */
 
 import { createOpenAI } from '@ai-sdk/openai'
+import { createVertex } from '@ai-sdk/google-vertex'
 import { generateObject } from 'ai'
 import { z } from 'zod'
+
+function stripFencesAndParse(raw)
+{
+  let text = typeof raw === 'string' ? raw : ''
+  const fenceMatch = text.match(/```(?:json|JSON)?\s*([\s\S]*?)```/)
+  if (fenceMatch) text = fenceMatch[1].trim()
+  const firstBrace = text.indexOf('{')
+  const lastBrace = text.lastIndexOf('}')
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace)
+    text = text.slice(firstBrace, lastBrace + 1)
+  return JSON.parse(text)
+}
+
+function normalizeParsedJson(parsed)
+{
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return parsed
+  for (const key of Object.keys(parsed))
+  {
+    const val = parsed[key]
+    if (val && typeof val === 'object' && !Array.isArray(val))
+    {
+      const keys = Object.keys(val)
+      if (keys.length > 0 && keys.every(k => /^\d+$/.test(k)))
+        parsed[key] = keys.sort((a, b) => Number(a) - Number(b)).map(k => val[k])
+      else if (key === 'sectionAssignments' || key === 'comments' || key === 'keptComments')
+        parsed[key] = Object.entries(val).map(([k, v]) =>
+          v && typeof v === 'object' && !v.sectionTitle && key === 'sectionAssignments'
+            ? { sectionTitle: k, ...v }
+            : v
+        )
+    }
+  }
+  if (!parsed.paperTypeSummary) parsed.paperTypeSummary = ''
+  if (!parsed.paperType) parsed.paperType = 'other'
+  if (!parsed.typeSpecificGuidance || typeof parsed.typeSpecificGuidance !== 'object')
+    parsed.typeSpecificGuidance = {}
+  const tsg = parsed.typeSpecificGuidance
+  for (const f of ['abstractFocus', 'introductionFocus', 'methodsFocus', 'resultsFocus', 'overallNotes'])
+    if (!tsg[f]) tsg[f] = ''
+  return parsed
+}
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -525,7 +567,57 @@ async function generateObjectWithRetry(options, label = 'LLM call', logOverrides
 
     try
     {
-      const result = await generateObject({ ...options, prompt })
+      let result
+      try
+      {
+        result = await generateObject({ ...options, prompt, mode: 'json' })
+      } catch (objErr)
+      {
+        const rawText = objErr.text || objErr.cause?.text || ''
+        if (!rawText) throw objErr
+        console.warn(`[AI Tutor] [${label}] generateObject failed (${objErr.name || 'Error'}), trying fence-strip fallback...`)
+        console.warn(`[AI Tutor] [${label}] Raw response (first 1000 chars): ${rawText.slice(0, 1000)}`)
+        let parsed = stripFencesAndParse(rawText)
+        console.warn(`[AI Tutor] [${label}] Parsed keys: ${Object.keys(parsed).join(', ')}, sectionAssignments type: ${Array.isArray(parsed.sectionAssignments) ? 'array' : typeof parsed.sectionAssignments}`)
+        parsed = normalizeParsedJson(parsed)
+        console.warn(`[AI Tutor] [${label}] After normalize, sectionAssignments type: ${Array.isArray(parsed.sectionAssignments) ? 'array(' + parsed.sectionAssignments.length + ')' : typeof parsed.sectionAssignments}`)
+        if (!options.schema) {
+          result = { object: parsed, usage: objErr.usage, finishReason: objErr.finishReason }
+        } else {
+          const safeResult = options.schema.safeParse(parsed)
+          if (safeResult.success) {
+            result = { object: safeResult.data, usage: objErr.usage, finishReason: objErr.finishReason }
+          } else {
+            console.warn(`[AI Tutor] [${label}] Schema validation failed: ${JSON.stringify(safeResult.error.issues).slice(0, 500)}`)
+            const obj = { ...parsed }
+            if (parsed.sectionAssignments && !Array.isArray(parsed.sectionAssignments)) {
+              obj.sectionAssignments = Object.values(parsed.sectionAssignments)
+            }
+            if (parsed.comments && !Array.isArray(parsed.comments)) {
+              obj.comments = Object.values(parsed.comments)
+            }
+            if (parsed.keptComments && !Array.isArray(parsed.keptComments)) {
+              obj.keptComments = Object.values(parsed.keptComments)
+            }
+            if (!obj.typeSpecificGuidance || typeof obj.typeSpecificGuidance !== 'object') {
+              obj.typeSpecificGuidance = { abstractFocus: '', introductionFocus: '', methodsFocus: '', resultsFocus: '', overallNotes: '' }
+            } else {
+              const tsg = obj.typeSpecificGuidance
+              for (const f of ['abstractFocus', 'introductionFocus', 'methodsFocus', 'resultsFocus', 'overallNotes'])
+                if (!tsg[f]) tsg[f] = ''
+            }
+            if (!obj.paperTypeSummary) obj.paperTypeSummary = ''
+            if (!obj.paperType) obj.paperType = 'other'
+            const lenientResult = options.schema.safeParse(obj)
+            if (lenientResult.success) {
+              result = { object: lenientResult.data, usage: objErr.usage, finishReason: objErr.finishReason }
+            } else {
+              console.warn(`[AI Tutor] [${label}] Parsed JSON: ${JSON.stringify(parsed).slice(0, 800)}`)
+              throw new Error(`Schema validation failed even after normalization: ${JSON.stringify(lenientResult.error.issues).slice(0, 500)}`)
+            }
+          }
+        }
+      }
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
       const responseStr = JSON.stringify(result.object)
       console.log(
@@ -762,7 +854,7 @@ export function buildSectionMapping(sectionAssignments, sections)
   return { mapping, hybridSections }
 }
 
-export async function classifyPaper(openai, model, sections)
+export async function classifyPaper(modelProvider, model, sections)
 {
   const abstractSection = sections.find(
     s => s.title.toLowerCase() === 'abstract'
@@ -857,7 +949,7 @@ Based on the above:
 3. Generate type-specific guidance for each reviewer.`
 
   const result = await generateObjectWithRetry({
-    model: openai(model),
+    model: modelProvider(model),
     schema: ClassificationSchema,
     system: classifierSystem,
     prompt: classifierPrompt,
@@ -1374,7 +1466,7 @@ const STRICT_MAX_COMMENTS = 30
  * the indices of comments to REMOVE (the least impactful ones).
  * Returns the filtered array of comments.
  */
-async function pruneCommentsWithLLM(openai, model, comments)
+async function pruneCommentsWithLLM(modelProvider, model, comments)
 {
   if (!STRICT_MODE || comments.length <= STRICT_MAX_COMMENTS)
   {
@@ -1428,7 +1520,7 @@ async function pruneCommentsWithLLM(openai, model, comments)
 
     const result = await generateObjectWithRetry(
       {
-        model: openai(model),
+        model: modelProvider(model),
         schema: PruneSchema,
         system: systemPrompt,
         prompt: userPrompt,
@@ -1519,7 +1611,7 @@ function severityFallbackPrune(comments, maxCount)
  * Run a single reviewer subagent.
  */
 async function runSubagent(
-  openai,
+  modelProvider,
   model,
   def,
   sections,
@@ -1732,8 +1824,8 @@ ${roleModelLogNote}`
     const logUserPrompt = `Review the following LaTeX text. For each comment, identify a specific passage that could be strengthened and provide either a concrete suggestion for improvement or a concern the author needs to address:\n\n${previewText(chunkText)}`
 
     const result = await generateObjectWithRetry({
-      model: openai(model),
-      schema: CommentArraySchema,
+    model: modelProvider(model),
+    schema: CommentArraySchema,
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.4,
@@ -2148,15 +2240,27 @@ export async function runFullReview({
   roleModelTexts = [],
 })
 {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey)
+  const useVertex = process.env.USE_VERTEX_AI === 'true'
+  let modelProvider
+  if (useVertex)
   {
-    throw new Error(
-      'OPENAI_API_KEY not set. Add it to /home/ubuntu/.jiarui/overleaf/.env'
-    )
+    const vertexProject = process.env.GOOGLE_VERTEX_PROJECT || 'safe-real-world-interactive'
+    const vertexLocation = process.env.GOOGLE_VERTEX_LOCATION || 'us-central1'
+    console.log(`[AI Tutor] Using Vertex AI (project=${vertexProject}, location=${vertexLocation})`)
+    const vertex = createVertex({ project: vertexProject, location: vertexLocation })
+    modelProvider = (model) => vertex(model)
+  } else
+  {
+    const apiKey = process.env.OPENAI_API_KEY
+    if (!apiKey)
+    {
+      throw new Error(
+        'OPENAI_API_KEY not set. Add it to /home/ubuntu/.jiarui/overleaf/.env'
+      )
+    }
+    const openai = createOpenAI({ apiKey, baseURL: process.env.OPENAI_BASE_URL })
+    modelProvider = (model) => openai.chat(model)
   }
-
-  const openai = createOpenAI({ apiKey })
 
   // Read merged.tex from cache
   const mergedTexPath = path.join(cacheDir, 'merged.tex')
@@ -2200,7 +2304,7 @@ export async function runFullReview({
   console.log('-'.repeat(60))
   console.log('[AI Tutor] Phase 2: Classifying paper type + assigning sections...')
   const phase2Start = Date.now()
-  const classification = await classifyPaper(openai, model, sections)
+  const classification = await classifyPaper(modelProvider, model, sections)
   const phase2Elapsed = ((Date.now() - phase2Start) / 1000).toFixed(1)
   console.log(
     `[AI Tutor] Phase 2 complete in ${phase2Elapsed}s — ` +
@@ -2380,7 +2484,7 @@ export async function runFullReview({
   const subagentPromises = agentDefs.map(def =>
   {
     const promise = runSubagent(
-      openai,
+      modelProvider,
       model,
       def,
       sections,
@@ -2476,7 +2580,7 @@ export async function runFullReview({
 
   // Phase 5: Strict mode pruning — if too many comments, ask LLM to pick least important
   const phase5Start = Date.now()
-  const prunedComments = await pruneCommentsWithLLM(openai, model, dedupedComments)
+  const prunedComments = await pruneCommentsWithLLM(modelProvider, model, dedupedComments)
   const phase5Elapsed = ((Date.now() - phase5Start) / 1000).toFixed(2)
   if (prunedComments.length < dedupedComments.length)
   {
