@@ -75,12 +75,14 @@ export default function AiChatPanel() {
     const text = prompt.trim()
     if (!text || stream.running) return
 
-    const { selectionText } = extractDocContext(currentDocument, editorSelection)
+    const { selectionText, docText } = extractDocContext(currentDocument, editorSelection)
 
     const payload = {
       sessionId: stream.sessionId ?? '',
       text,
       selection: selectionText || undefined,
+      // No selection: send the whole document so the agent can work on all of it.
+      wholeDoc: !selectionText && docText ? docText : undefined,
       model:
         providerId && modelId
           ? { providerID: providerId, modelID: modelId }

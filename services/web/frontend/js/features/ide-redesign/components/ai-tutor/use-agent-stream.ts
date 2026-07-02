@@ -23,6 +23,7 @@ export interface SendPayload {
   sessionId: string
   text: string
   selection?: string
+  wholeDoc?: string
   model?: { providerID: string; modelID: string }
 }
 
@@ -268,6 +269,7 @@ export function useAgentStream(
         backend,
       }
       if (payload.selection) body.selection = payload.selection
+      if (payload.wholeDoc) body.wholeDoc = payload.wholeDoc
       if (payload.model) body.model = payload.model
 
       const resp = await fetch(`${base}/api/agent2/message`, {
