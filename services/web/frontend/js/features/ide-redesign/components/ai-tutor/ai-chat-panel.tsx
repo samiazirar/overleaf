@@ -39,6 +39,11 @@ function parseEditBlock(text: string): EditRange | null {
 }
 
 export default function AiChatPanel() {
+  // The Overleaf project id is passed as the stream's `workdir`. It is NOT a
+  // filesystem path: the sidecar's resolveWorkdir() maps this id to a real dir
+  // (~/.openprism/projects/<id>). Passing the raw id straight to opencode was
+  // the original cause of the "stuck on Running" hang, so the translation must
+  // stay server-side. See utils/workdir.js in the sidecar.
   const projectId = getMeta('ol-project_id') ?? 'unknown'
   const [backend, setBackend] = useState('opencode')
   const stream = useAgentStream(projectId, backend)

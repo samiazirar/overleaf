@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import getMeta from '@/utils/meta'
 
+// This interface is the RUNTIME parsing shape (see parseAgent2Event below).
+// agent2-event-schema.ts holds a Zod version of the same contract used only for
+// type derivation, and it diverges slightly (its `message` variant requires
+// `text` where this one makes it optional). Keep the two in sync when the
+// sidecar's normalized event kinds change.
 export interface Agent2Event {
   kind: 'reasoning' | 'message' | 'tool' | 'status' | 'done' | 'error'
   id?: string
@@ -94,6 +99,11 @@ export function useAgentStream(
       const url = `${base}/api/agent2/events?workdir=${enc(workdir)}&sessionId=${enc(sid)}&backend=${enc(backend)}`
       const es = new EventSource(url)
 
+      // We listen on the DEFAULT 'message' event, which EventSource fires only
+      // for SSE frames that have NO `event:` line. The sidecar therefore MUST
+      // emit bare `data: {...}` frames and dispatch by the JSON `kind` field.
+      // If it ever emits named frames (event: reasoning, etc.) they are silently
+      // dropped here and the panel spins forever. See agentStream.js send().
       es.addEventListener('message', (ev: MessageEvent) => {
         const event = parseAgent2Event(ev.data)
         if (!event) return
@@ -103,6 +113,9 @@ export function useAgentStream(
         }
       })
 
+      // On a transport error we stop the spinner and drop this EventSource, but
+      // deliberately DO NOT clear sessionIdRef: the backend session may still be
+      // alive, so a subsequent send() reuses it rather than orphaning the turn.
       es.addEventListener('error', () => {
         setRunning(false)
         es.close()
