@@ -741,64 +741,108 @@ async function reviewWholeProject(req, res) {
     }
   }
 
-  // Step 2: Run multi-agent review
-    const result = await runFullReview({
-      projectId,
-      model,
-      venue,
-      cacheDir,
-      docContentMap,
-      rootDocPath: normalizedRootPath,
-      roleModelTexts,
-    })
-    // Attach metadata to the response so frontend can display file info
-    result.metadata = metadata
-
-    // Build docPath -> docId mapping so frontend can open the correct document
-    const docPathToId = {}
-    for (const [docPath, docData] of Object.entries(allDocs)) {
-      const normalized = docPath.startsWith('/') ? docPath.slice(1) : docPath
-      docPathToId[normalized] = docData._id.toString()
+  // Step 2: Dedupe check — if a review is already running (started < 10 min ago), don't start another
+  const statusPath = path.join(cacheDir, 'status.json')
+  try {
+    if (fs.existsSync(statusPath)) {
+      const existingStatus = JSON.parse(fs.readFileSync(statusPath, 'utf-8'))
+      if (existingStatus.state === 'running' && (Date.now() - existingStatus.startedAt) < 10 * 60 * 1000) {
+        console.log(`[AI Tutor] Review already running for project ${projectId}, skipping duplicate`)
+        return res.json({ ok: true, state: 'running' })
+      }
     }
-    result.docPathToId = docPathToId
+  } catch (dedupeErr) {
+    // Malformed status.json — treat as absent and proceed
+    console.warn('[AI Tutor] Could not read existing status.json, proceeding:', dedupeErr.message)
+  }
 
-    // Log review results to JSONL
+  // Write initial status before kicking off background job
+  const startedAt = Date.now()
+  fs.writeFileSync(statusPath, JSON.stringify({ state: 'running', startedAt, model, venue }), 'utf-8')
+
+  // Step 3: Kick off background review (not awaited)
+  ;(async () => {
     try {
-      const logDir = '/var/lib/overleaf/ai-tutor-logs'
-      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
-      const date = new Date().toISOString().split('T')[0]
-      const logFile = path.join(logDir, `ai-tutor-${date}.jsonl`)
-
-      // Flatten all comments from all docs
-      const allComments = Object.values(result.commentsByDoc).flat()
-
-      const logEntry = {
-        timestamp: new Date().toISOString(),
-        type: 'full_review',
+      const result = await runFullReview({
         projectId,
-        userId: userId.toString(),
         model,
         venue,
-        roleModelPapers: roleModelTexts.length > 0 ? roleModelTexts.map(rm => rm.name) : undefined,
-        paperType: result.classification.paperType,
-        paperTypeSummary: result.classification.paperTypeSummary,
-        summary: result.summary,
-        failedAgents: result.failedAgents,
-        comments: allComments.map(c => ({
-          highlightText: c.highlightText,
-          comment: c.comment,
-          severity: c.severity,
-          category: c.category,
-          agentName: c.agentName,
-          docPath: c.docPath,
-        })),
-      }
-      fs.appendFileSync(logFile, JSON.stringify(logEntry) + '\n')
-    } catch (logErr) {
-      console.warn('[AI Tutor] Failed to write JSONL log:', logErr.message)
-    }
+        cacheDir,
+        docContentMap,
+        rootDocPath: normalizedRootPath,
+        roleModelTexts,
+      })
 
-    res.json(result)
+      // Attach metadata to the result so frontend can display file info
+      result.metadata = metadata
+
+      // Build docPath -> docId mapping so frontend can open the correct document
+      const docPathToId = {}
+      for (const [docPath, docData] of Object.entries(allDocs)) {
+        const normalized = docPath.startsWith('/') ? docPath.slice(1) : docPath
+        docPathToId[normalized] = docData._id.toString()
+      }
+      result.docPathToId = docPathToId
+
+      // Write decorated result to cache so GET can retrieve it
+      fs.writeFileSync(path.join(cacheDir, 'result.json'), JSON.stringify(result, null, 2), 'utf-8')
+
+      // Log review results to JSONL
+      try {
+        const logDir = '/var/lib/overleaf/ai-tutor-logs'
+        if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+        const date = new Date().toISOString().split('T')[0]
+        const logFile = path.join(logDir, `ai-tutor-${date}.jsonl`)
+
+        // Flatten all comments from all docs
+        const allComments = Object.values(result.commentsByDoc).flat()
+
+        const logEntry = {
+          timestamp: new Date().toISOString(),
+          type: 'full_review',
+          projectId,
+          userId: userId.toString(),
+          model,
+          venue,
+          roleModelPapers: roleModelTexts.length > 0 ? roleModelTexts.map(rm => rm.name) : undefined,
+          paperType: result.classification.paperType,
+          paperTypeSummary: result.classification.paperTypeSummary,
+          summary: result.summary,
+          failedAgents: result.failedAgents,
+          comments: allComments.map(c => ({
+            highlightText: c.highlightText,
+            comment: c.comment,
+            severity: c.severity,
+            category: c.category,
+            agentName: c.agentName,
+            docPath: c.docPath,
+          })),
+        }
+        fs.appendFileSync(logFile, JSON.stringify(logEntry) + '\n')
+      } catch (logErr) {
+        console.warn('[AI Tutor] Failed to write JSONL log:', logErr.message)
+      }
+
+      // Mark done
+      fs.writeFileSync(statusPath, JSON.stringify({ state: 'done', startedAt, finishedAt: Date.now(), model, venue }), 'utf-8')
+      console.log(`[AI Tutor] Background review complete for project ${projectId}`)
+    } catch (err) {
+      console.error('[AI Tutor] Background review failed:', err)
+      try {
+        fs.writeFileSync(statusPath, JSON.stringify({
+          state: 'error',
+          startedAt,
+          finishedAt: Date.now(),
+          error: String((err && err.message) || err),
+        }), 'utf-8')
+      } catch (writeErr) {
+        console.error('[AI Tutor] Failed to write error status:', writeErr.message)
+      }
+    }
+  })()
+
+  // Respond immediately — the review continues in the background
+  res.json({ ok: true, state: 'running' })
   } catch (err) {
     console.error('[AI Tutor] Review failed:', err)
     if (!res.headersSent) {
@@ -946,6 +990,55 @@ async function deleteAiTutorComments(req, res) {
   }
 }
 
+async function getReviewStatus(req, res) {
+  const { project_id: projectId } = req.params
+  const cacheDir = path.join('/var/lib/overleaf/ai-tutor-cache', projectId)
+  const statusPath = path.join(cacheDir, 'status.json')
+  const resultPath = path.join(cacheDir, 'result.json')
+
+  let status = null
+  let result = null
+
+  try {
+    if (fs.existsSync(statusPath)) {
+      status = JSON.parse(fs.readFileSync(statusPath, 'utf-8'))
+    }
+  } catch (err) {
+    console.warn('[AI Tutor] getReviewStatus: could not parse status.json:', err.message)
+    status = null
+  }
+
+  try {
+    if (fs.existsSync(resultPath)) {
+      result = JSON.parse(fs.readFileSync(resultPath, 'utf-8'))
+    }
+  } catch (err) {
+    console.warn('[AI Tutor] getReviewStatus: could not parse result.json:', err.message)
+    result = null
+  }
+
+  if (!status && !result) {
+    return res.json({ state: 'none' })
+  }
+
+  // If status says running but it's been > 10 min, treat as interrupted
+  if (status && status.state === 'running' && (Date.now() - status.startedAt) > 10 * 60 * 1000) {
+    return res.json({ state: 'error', error: 'review interrupted (stale)', startedAt: status.startedAt })
+  }
+
+  // Build response from whatever we have
+  const state = status ? status.state : (result ? 'done' : 'none')
+  return res.json({
+    state,
+    startedAt: status ? status.startedAt : undefined,
+    finishedAt: status ? status.finishedAt : undefined,
+    model: status ? status.model : undefined,
+    venue: status ? status.venue : undefined,
+    result: result || null,
+    error: status ? status.error : undefined,
+  })
+}
+
 export default {
   sendMessage: expressify(sendMessage),
   getMessages: expressify(getMessages),
@@ -961,6 +1054,7 @@ export default {
   logAITutorSuggestions: expressify(logAITutorSuggestions),
   analyzeWholeProject: expressify(analyzeWholeProject),
   reviewWholeProject: expressify(reviewWholeProject),
+  getReviewStatus: expressify(getReviewStatus),
   citationCheckProject: expressify(citationCheckProject),
   deleteAiTutorComments: expressify(deleteAiTutorComments),
 }

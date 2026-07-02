@@ -1,4 +1,4 @@
-import { postJSON } from '@/infrastructure/fetch-json'
+import { postJSON, getJSON } from '@/infrastructure/fetch-json'
 
 export interface FileCategory {
   description: string
@@ -58,6 +58,46 @@ export interface ReviewResult {
   metadata?: WholeProjectMetadata
 }
 
+export interface ReviewStatus {
+  state: 'none' | 'running' | 'done' | 'error'
+  startedAt?: number
+  finishedAt?: number
+  model?: string
+  venue?: string
+  result?: ReviewResult
+  error?: string
+}
+
+export async function reviewWholeProject(
+  projectId: string,
+  {
+    model,
+    venue = 'arxiv',
+    roleModelTexts = [],
+  }: {
+    model: string
+    venue?: string
+    roleModelTexts?: Array<{ name: string; text: string }>
+  }
+): Promise<{ state: string }> {
+  return (await postJSON(`/project/${projectId}/ai-tutor-review`, {
+    body: {
+      model,
+      venue,
+      roleModelTexts: roleModelTexts.length > 0 ? roleModelTexts : undefined,
+    },
+  })) as { state: string }
+}
+
+export async function getReviewStatus(
+  projectId: string
+): Promise<ReviewStatus> {
+  return (await getJSON(
+    `/project/${projectId}/ai-tutor-review`
+  )) as ReviewStatus
+}
+
+/** @deprecated Use reviewWholeProject + getReviewStatus instead */
 export async function runFullReview(
   projectId: string,
   model: string,

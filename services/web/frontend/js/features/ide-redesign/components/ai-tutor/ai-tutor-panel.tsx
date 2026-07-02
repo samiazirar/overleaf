@@ -6,12 +6,14 @@ import { useProjectContext } from '@/shared/context/project-context'
 import { postJSON } from '@/infrastructure/fetch-json'
 import RangesTracker from '@overleaf/ranges-tracker'
 import {
-  runFullReview,
+  reviewWholeProject,
+  getReviewStatus,
   runCitationCheck,
   deleteAiTutorComments,
   WholeProjectMetadata,
   ReviewResult,
   ReviewComment,
+  ReviewStatus,
 } from '@/features/editor-left-menu/utils/ai-tutor-service'
 import { ThreadId } from '../../../../../../types/review-panel/review-panel'
 import { CommentOperation } from '../../../../../../types/change'
@@ -85,10 +87,101 @@ export default function AiTutorPanel() {
   const commentQueueRef = useRef<CommentQueue | null>(null)
   const applyTriggerRef = useRef(0)
   const [applyTrigger, setApplyTrigger] = useState(0)
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const { currentDocument, currentDocumentId } = useEditorOpenDocContext()
   const { openDocWithId } = useEditorManagerContext()
   const { projectId } = useProjectContext()
+
+  // -----------------------------------------------------------------------
+  // Polling helpers for Full Paper Review
+  // -----------------------------------------------------------------------
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current !== null) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+  }, [])
+
+  // Apply a ReviewStatus payload from the server to local state.
+  // Returns true if polling should stop.
+  const applyReviewStatus = useCallback(
+    (status: ReviewStatus): boolean => {
+      if (status.state === 'done' && status.result) {
+        const r = status.result
+        setReviewResult(r)
+        setReviewProgress(null)
+        setIsReviewing(false)
+        const failedNote =
+          r.failedAgents.length > 0
+            ? ` (${r.failedAgents.length} agent(s) skipped)`
+            : ''
+        setSuccessMessage(
+          `Review complete! ${r.summary.total} comments from ${Object.keys(r.summary.byCategory).length} reviewers.` +
+            ` Paper type: ${r.classification.paperType}.${failedNote}`
+        )
+        return true
+      }
+      if (status.state === 'error') {
+        setError(status.error || 'Review failed on the server.')
+        setReviewProgress(null)
+        setIsReviewing(false)
+        return true
+      }
+      // state === 'running' or 'none' — keep polling (none shouldn't happen mid-review)
+      return false
+    },
+    // setters are stable; no external deps needed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  )
+
+  const startPolling = useCallback(
+    (pId: string) => {
+      // Guard against duplicate pollers
+      if (pollIntervalRef.current !== null) return
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const status = await getReviewStatus(pId)
+          const done = applyReviewStatus(status)
+          if (done) stopPolling()
+        } catch (err) {
+          console.warn('[AI Tutor] Polling error:', err)
+          // keep polling; transient network errors should not stop progress
+        }
+      }, 3000)
+    },
+    [applyReviewStatus, stopPolling]
+  )
+
+  // On mount: probe server state so a refresh/reopen can restore the review.
+  useEffect(() => {
+    let cancelled = false
+    getReviewStatus(projectId)
+      .then(status => {
+        if (cancelled) return
+        if (status.state === 'running') {
+          setIsReviewing(true)
+          setReviewProgress(
+            'Review is running on the server... This may take 1-2 minutes.'
+          )
+          startPolling(projectId)
+        } else {
+          applyReviewStatus(status)
+        }
+      })
+      .catch(err => {
+        // Silently ignore — server may not have any review yet
+        console.debug('[AI Tutor] Mount status check failed:', err)
+      })
+    return () => {
+      cancelled = true
+      stopPolling()
+    }
+    // Run once on mount; projectId is stable for the lifetime of the editor
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // -----------------------------------------------------------------------
   // Effect: when currentDocument changes during auto-apply, process next batch
@@ -244,55 +337,42 @@ export default function AiTutorPanel() {
   )
 
   // -----------------------------------------------------------------------
-  // Run full review (analyzes project + runs multi-agent review in one call)
+  // Run full review — POST to start, then poll for completion
   // -----------------------------------------------------------------------
   const handleFullReview = useCallback(async () => {
+    // Stop any existing poller before starting a new review
+    stopPolling()
+
     setIsReviewing(true)
     setError(null)
     setSuccessMessage(null)
     setReviewProgress(
-      'Analyzing project structure and running multi-agent review... This may take 1-2 minutes.'
+      'Submitting review request... This may take 1-2 minutes.'
     )
     setReviewResult(null)
     setAppliedCount(0)
 
     try {
-      const result = await runFullReview(
-        projectId,
-        selectedModel,
-        selectedVenue,
-        roleModelTexts
+      await reviewWholeProject(projectId, {
+        model: selectedModel,
+        venue: selectedVenue,
+        roleModelTexts,
+      })
+      // Server accepted the request (state: 'running').
+      // Switch to in-progress message and start polling.
+      setReviewProgress(
+        'Review is running on the server... This may take 1-2 minutes.'
       )
-
-      if (!result.success) {
-        setError(result.error || 'Review failed.')
-        setIsReviewing(false)
-        setReviewProgress(null)
-        return
-      }
-
-      setReviewResult(result.result!)
-      setReviewProgress(null)
-
-      const r = result.result!
-      const failedNote =
-        r.failedAgents.length > 0
-          ? ` (${r.failedAgents.length} agent(s) skipped)`
-          : ''
-      setSuccessMessage(
-        `Review complete! ${r.summary.total} comments from ${Object.keys(r.summary.byCategory).length} reviewers.` +
-        ` Paper type: ${r.classification.paperType}.${failedNote}`
-      )
+      startPolling(projectId)
     } catch (err) {
       console.error('[AI Tutor] Full review error:', err)
       setError(
         err instanceof Error ? err.message : 'An unexpected error occurred.'
       )
       setReviewProgress(null)
-    } finally {
       setIsReviewing(false)
     }
-  }, [projectId, selectedModel, selectedVenue, roleModelTexts])
+  }, [projectId, selectedModel, selectedVenue, roleModelTexts, startPolling, stopPolling])
 
   const handleCitationCheck = useCallback(async () => {
     setIsCitationChecking(true)
